@@ -1,0 +1,18 @@
+id = "herdr-open-nvim"
+name = "Open in nvim"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Extract readable file paths and file:// links from the session transcript and open one in nvim (prefix+e)"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Open transcript file in nvim"
+description = "Pick a readable file path or file:// link from the focused pane's session transcript and open it in nvim"
+command = ["./scripts/open-picker"]
+
+[[panes]]
+id = "picker"
+title = "herdr-open-nvim"
+placement = "overlay"
+command = ["./scripts/pick-and-open"]

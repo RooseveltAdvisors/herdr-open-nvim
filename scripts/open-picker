@@ -1,0 +1,21 @@
+#!/bin/sh
+# Open the herdr-open-nvim picker overlay on the focused pane.
+#
+# Usage: open-picker
+# The entrypoint id must match a [[panes]] id in herdr-plugin.toml.
+set -eu
+
+entrypoint=picker
+
+if [ -n "${HERDR_BIN_PATH:-}" ] && [ -x "$HERDR_BIN_PATH" ]; then
+    herdr_cli=$HERDR_BIN_PATH
+else
+    herdr_cli=$(command -v herdr) || {
+        echo "herdr-open-nvim: cannot find a usable Herdr CLI" >&2
+        exit 127
+    }
+fi
+
+exec "$herdr_cli" plugin pane open \
+    --plugin herdr-open-nvim \
+    --entrypoint "$entrypoint"

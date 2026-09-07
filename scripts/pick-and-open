@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""herdr-open-nvim pane entrypoint: pick a transcript file link and open it in nvim.
+
+Reads the focused pane's full retained session transcript over the Herdr socket
+API (`pane.read` with the `recent_unwrapped` source), extracts readable file
+paths and file:// links, shows an fzf overlay picker, and execs nvim on the
+selection. When nvim quits, the overlay pane exits.
+
+Standard library only; fzf must be on PATH for the picker.
+
+Environment (set by Herdr when launching the plugin pane):
+  HERDR_SOCKET_PATH           Herdr API socket
+  HERDR_PLUGIN_CONTEXT_JSON   invocation context; needs focused_pane_id and,
+                              optionally, focused_pane_cwd / workspace_cwd for
+                              resolving relative paths
+
+Debug flag: --print-candidates prints one "target" per line (path[:line[:col]])
+and exits, without fzf or nvim.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import posixpath
+import re
+import subprocess
+import sys
+import urllib.parse
+from typing import Optional
+
+RPC_IO_TIMEOUT = 5.0
+TRAILING_PUNCT = ".,;:!?'\")]}>"
+
+
+def die(message: str) -> None:
+    print(f"herdr-open-nvim: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+# ---------------------------------------------------------------- socket API
+
+
+def rpc(socket_path: str, method: str, params: dict) -> dict:
+    """One newline-delimited JSON RPC call over the Herdr API socket."""
+    import socket
+
+    payload = json.dumps({"id": "1", "method": method, "params": params}) + "\n"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.settimeout(RPC_IO_TIMEOUT)
+        stream.connect(socket_path)
+        stream.sendall(payload.encode())
+        response = b""
+        while not response.endswith(b"\n"):
+            chunk = stream.recv(65536)
+            if not chunk:
+                break
+            response += chunk
+    envelope = json.loads(response.decode())
+    if "error" in envelope:
+        err = envelope["error"]
+        code = err.get("code", "unknown")
+        raise RuntimeError(f"Herdr API error {code}: {err.get('message', '')}")
+    return envelope.get("result", {})
+
+
+def read_transcript(socket_path: str, pane_id: str) -> tuple[str, bool]:
+    """Read the full retained transcript via recent_unwrapped.
+
+    Never degrades to viewport-shaped sources: on a Herdr lacking
+    recent_unwrapped this fails loudly instead of silently treating the
+    viewport as the session. Returns (text, truncated).
+    """
+    try:
+        result = rpc(
+            socket_path,
+            "pane.read",
+            {
+                "pane_id": pane_id,
+                "source": "recent_unwrapped",
+                "format": "text",
+                "strip_ansi": True,
+                "lines": 2**31 - 1,
+            },
+        )
+    except RuntimeError as error:
+        if "unsupported_parameter" in str(error).replace("-", "_"):
+            result = rpc(
+                socket_path,
+                "pane.read",
+                {
+                    "pane_id": pane_id,
+                    "source": "recent_unwrapped",
+                    "format": "text",
+                    "strip_ansi": True,
+                },
+            )
+        else:
+            raise
+    read = result.get("read", {})
+    return read.get("text", "") or "", bool(read.get("truncated"))
+
+
+def pane_has_retained_history(socket_path: str, pane_id: str) -> bool:
+    """True unless the pane keeps no host scrollback (alt-screen TUI owns it)."""
+    try:
+        result = rpc(socket_path, "pane.get", {"pane_id": pane_id})
+        scroll = result.get("pane", {}).get("scroll", {})
+        max_offset = scroll.get("max_offset_from_bottom")
+        return bool(max_offset) if max_offset is not None else True
+    except (RuntimeError, KeyError, TypeError):
+        return True
+
+
+# ---------------------------------------------------------------- extraction
+
+# Anything with at least one internal slash, optionally absolute, ~/ or ../
+# prefixed, with optional trailing :line or :line:col. The lookbehind keeps us
+# from matching mid-token or inside URL authorities (https://host/x/y: the
+# match candidate is preceded by '/').
+PATH_RE = re.compile(
+    r"(?<![\w.@+~/-])"
+    r"((?:/|~/|\.\.?/)?[\w.@+~-]+(?:/[\w.@+~-]+)+/?"
+    r"(?::\d+)?(?::\d+)?)"
+)
+# Trailing :line and :line:col suffixes on a path-shaped token.
+LINE_COL_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
+# Full file:// URI; the path part is recovered by percent-decoding first, so
+# fully encoded paths and literal-host forms both work. Fragments (#L12) are
+# excluded from the match.
+FILE_URL_RE = re.compile(r"file://[^\s#\"'<>)]*")
+
+
+def file_url_path(uri: str) -> Optional[str]:
+    rest = urllib.parse.unquote(uri[len("file://"):])
+    slash = rest.find("/")
+    return rest[slash:] if slash >= 0 else None
+
+
+def strip_trailing_punct(token: str) -> str:
+    return token.rstrip(TRAILING_PUNCT)
+
+
+def split_line_col(token: str) -> tuple[str, Optional[int], Optional[int]]:
+    match = LINE_COL_RE.match(token)
+    if not match:
+        return token, None, None
+    return (
+        match.group("path"),
+        int(match.group("line")),
+        int(match.group("col")) if match.group("col") else None,
+    )
+
+
+def resolve(token: str, cwds: list[str]) -> Optional[str]:
+    """Resolve a transcript token to an existing, readable file path."""
+    token = strip_trailing_punct(token)
+    if not token:
+        return None
+    token, line, col = split_line_col(token)
+    if not token:
+        return None
+    expanded = os.path.expanduser(token)
+    candidates = [expanded] if os.path.isabs(expanded) else [
+        os.path.join(cwd, expanded) for cwd in cwds if cwd
+    ]
+    for candidate in candidates:
+        candidate = posixpath.normpath(candidate)
+        if os.path.isfile(candidate) and os.access(candidate, os.R_OK):
+            if line is None:
+                return candidate
+            suffix = str(line) + (f":{col}" if col else "")
+            return f"{candidate}:{suffix}"
+    return None
+
+
+def extract_targets(text: str, cwds: list[str]) -> list[str]:
+    """Readable file targets from transcript text, most recent first.
+
+    Returns deduped "path" or "path:line[:col]" strings ordered by their last
+    occurrence in the transcript (newest first).
+    """
+    hits: list[tuple[int, str]] = []  # (last index in text, raw token)
+
+    for match in FILE_URL_RE.finditer(text):
+        raw = file_url_path(match.group(0))
+        if raw:
+            hits.append((match.start(0), raw))
+
+    for match in PATH_RE.finditer(text):
+        hits.append((match.start(1), match.group(1)))
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for _, raw in sorted(hits, key=lambda hit: hit[0], reverse=True):
+        resolved = resolve(raw, cwds)
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            ordered.append(resolved)
+    return ordered
+
+
+# ---------------------------------------------------------------- picker/tui
+
+
+def relative_label(path: str, cwds: list[str]) -> str:
+    for cwd in cwds:
+        if cwd and (path == cwd or path.startswith(cwd.rstrip("/") + "/")):
+            rel = os.path.relpath(path, cwd)
+            if not rel.startswith(".."):
+                return rel
+    return path
+
+
+def pick(targets: list[str], cwds: list[str]) -> Optional[str]:
+    """fzf over the targets; returns the chosen target or None on cancel.
+
+    fzf fields: 1 = display label (with :line:col suffix), 2 = plain path,
+    3 = line, 4 = column. Only field 1 is shown; the preview and nvim use
+    the plain path so line suffixes never break file access.
+    """
+    rows = []
+    for target in targets:
+        path, line, col = split_line_col(target)
+        label = relative_label(path, cwds)
+        if line is not None:
+            label += f":{line}" + (f":{col}" if col else "")
+        rows.append("\t".join([label, path, str(line or ""), str(col or "")]))
+    preview = (
+        "bat --style=plain --color=always -- {2} 2>/dev/null || cat -- {2} 2>/dev/null"
+    )
+    result = subprocess.run(
+        [
+            "fzf",
+            "--prompt=open in nvim > ",
+            "--delimiter=\t",
+            "--with-nth=1",
+            f"--preview={preview}",
+            "--preview-window=right,60%,wrap",
+            "--no-multi",
+        ],
+        input="\n".join(rows) + "\n",
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.rstrip("\n").split("\t")
+    if len(fields) < 2:
+        return None
+    target = fields[1]
+    if len(fields) > 2 and fields[2]:
+        target += f":{fields[2]}"
+        if len(fields) > 3 and fields[3]:
+            target += f":{fields[3]}"
+    return target
+
+
+def exec_nvim(target: str) -> None:
+    path, line, col = split_line_col(target)
+    if not os.path.isfile(path):
+        die(f"selected file vanished: {path}")
+    nvim = os.environ.get("NVIM_BIN", "nvim")
+    args = [nvim]
+    if line is not None:
+        args.append(f"+normal!{line}G{col or 0}|")
+    args.append(path)
+    os.execvp(nvim, args)
+
+
+# ---------------------------------------------------------------------- main
+
+
+def load_context() -> tuple[str, list[str]]:
+    raw = os.environ.get("HERDR_PLUGIN_CONTEXT_JSON")
+    if not raw:
+        die("HERDR_PLUGIN_CONTEXT_JSON is not set; open this through the Herdr plugin action")
+    try:
+        context = json.loads(raw)
+    except json.JSONDecodeError as error:
+        die(f"cannot parse HERDR_PLUGIN_CONTEXT_JSON: {error}")
+    pane_id = context.get("focused_pane_id")
+    if not pane_id:
+        die("HERDR_PLUGIN_CONTEXT_JSON has no focused_pane_id")
+    cwds = [
+        cwd
+        for cwd in (context.get("focused_pane_cwd"), context.get("workspace_cwd"))
+        if cwd
+    ]
+    return pane_id, cwds
+
+
+def main() -> None:
+    print_candidates = "--print-candidates" in sys.argv[1:]
+    socket_path = os.environ.get("HERDR_SOCKET_PATH")
+    if not socket_path:
+        die("HERDR_SOCKET_PATH is not set; open this through the Herdr plugin action")
+    pane_id, cwds = load_context()
+
+    text, truncated = read_transcript(socket_path, pane_id)
+    if not pane_has_retained_history(socket_path, pane_id):
+        print(
+            "herdr-open-nvim: pane keeps no host scrollback (alt-screen pane?); "
+            "extracting viewport content only",
+            file=sys.stderr,
+        )
+    if truncated:
+        print(
+            "herdr-open-nvim: transcript read was truncated by the server cap",
+            file=sys.stderr,
+        )
+
+    targets = extract_targets(text, cwds)
+    if print_candidates:
+        print("\n".join(targets))
+        return
+    if not targets:
+        die("no readable file paths or file:// links found in the session transcript")
+
+    target = pick(targets, cwds)
+    if target:
+        exec_nvim(target)
+
+
+if __name__ == "__main__":
+    main()
