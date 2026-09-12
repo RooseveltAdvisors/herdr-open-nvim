@@ -3,6 +3,31 @@
 Herdr plugin: extract readable file links from the session transcript and open
 them in nvim (`prefix+e`).
 
+## Demo
+
+`prefix+e` on a pane whose transcript mentions `scripts/pick-and-open:259`,
+straight into nvim on line 259:
+
+![prefix+e extracts a file link from the transcript and opens it in nvim at the referenced line](docs/demo/open-in-nvim.gif)
+
+![Herdr pane transcript containing path:line references and a file:// link](docs/demo/01-transcript.png)
+
+A verbose test run and a couple of greps leave `path:line` references and a
+`file://` link in the pane's scrollback.
+
+![fzf overlay listing the extracted file targets with a file preview](docs/demo/02-picker.png)
+
+`prefix+e` scans the full retained transcript - not just the viewport - and
+offers every link that resolves to a readable file, newest first, with a preview.
+
+![nvim open inside the Herdr overlay with the cursor on line 259](docs/demo/03-nvim-at-line.png)
+
+Picking `scripts/pick-and-open:259` opens nvim on line 259 inside the overlay;
+quitting nvim closes it.
+
+Re-record the GIF with `docs/demo/record-demo.sh` (needs `asciinema` and `agg`;
+it drives a throwaway named Herdr session, so your own session is untouched).
+
 Press the binding on any pane and the plugin reads that pane's full retained
 session transcript (not just the viewport), collects file paths and `file://`
 links that resolve to existing readable files, and shows an fzf overlay with a
