@@ -134,7 +134,12 @@ FILE_URL_RE = re.compile(r"file://[^\s#\"'<>]*")
 def file_url_path(uri: str) -> Optional[str]:
     rest = urllib.parse.unquote(uri[len("file://"):])
     slash = rest.find("/")
-    return rest[slash:] if slash >= 0 else None
+    if slash < 0:
+        return None
+    path = rest[slash:]
+    while path.endswith(")") and path.count("(") < path.count(")"):
+        path = path[:-1]
+    return path
 
 
 def strip_trailing_punct(token: str) -> str:

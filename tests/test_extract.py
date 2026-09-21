@@ -220,6 +220,7 @@ class ExtractTargetsTests(unittest.TestCase):
             "arcs: AccountedFor - Dr. B Feedback on Matt Johnston Proposal (2026-09-21).md",
         )
         uri = "file://" + quote(target)
+        self.assertEqual(pick_and_open.file_url_path(uri + ")"), target)
         self.assertEqual(
             pick_and_open.extract_targets(f"open ({uri})#L12", self.cwds),
             [target],
