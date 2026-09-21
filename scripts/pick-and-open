@@ -120,15 +120,15 @@ def pane_has_retained_history(socket_path: str, pane_id: str) -> bool:
 # The lookbehind keeps us from matching mid-token or inside URL authorities.
 PATH_RE = re.compile(
     r"(?<![\w.@+~/-])"
-    r"((?:/|~/|\.\.?/)?[^\s\"'<>()[\],;!?]+"
-    r"(?:[ \t]+[^\s\"'<>()[\],;!?]+)*)"
+    r"((?:/|~/|\.\.?/)?[^\s\"'<>]+"
+    r"(?:[ \t]+[^\s\"'<>]+)*)"
 )
 # Trailing :line and :line:col suffixes on a path-shaped token.
 LINE_COL_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
 # Full file:// URI; the path part is recovered by percent-decoding first, so
 # fully encoded paths and literal-host forms both work. Fragments (#L12) are
 # excluded from the match.
-FILE_URL_RE = re.compile(r"file://[^\s#\"'<>)]*")
+FILE_URL_RE = re.compile(r"file://[^\s#\"'<>]*")
 
 
 def file_url_path(uri: str) -> Optional[str]:
@@ -154,23 +154,28 @@ def split_line_col(token: str) -> tuple[str, Optional[int], Optional[int]]:
 
 def resolve(token: str, cwds: list[str]) -> Optional[str]:
     """Resolve a transcript token to an existing, readable file path."""
-    token = strip_trailing_punct(token)
     if not token:
         return None
-    token, line, col = split_line_col(token)
-    if not token:
-        return None
-    expanded = os.path.expanduser(token)
-    candidates = [expanded] if os.path.isabs(expanded) else [
-        os.path.join(cwd, expanded) for cwd in cwds if cwd
-    ]
-    for candidate in candidates:
-        candidate = posixpath.normpath(candidate)
-        if os.path.isfile(candidate) and os.access(candidate, os.R_OK):
-            if line is None:
-                return candidate
-            suffix = str(line) + (f":{col}" if col else "")
-            return f"{candidate}:{suffix}"
+    variants = [token]
+    stripped = token
+    while stripped and stripped[-1] in TRAILING_PUNCT:
+        stripped = stripped[:-1]
+        variants.append(stripped)
+    for variant in variants:
+        path, line, col = split_line_col(variant)
+        if not path:
+            continue
+        expanded = os.path.expanduser(path)
+        candidates = [expanded] if os.path.isabs(expanded) else [
+            os.path.join(cwd, expanded) for cwd in cwds if cwd
+        ]
+        for candidate in candidates:
+            candidate = posixpath.normpath(candidate)
+            if os.path.isfile(candidate) and os.access(candidate, os.R_OK):
+                if line is None:
+                    return candidate
+                suffix = str(line) + (f":{col}" if col else "")
+                return f"{candidate}:{suffix}"
     return None
 
 
@@ -189,9 +194,9 @@ def resolve_candidate(raw: str, cwds: list[str]) -> Optional[str]:
 
 
 def candidate_starts(raw: str) -> list[tuple[int, str]]:
-    """Return raw plus each whitespace-delimited suffix and its offset."""
+    """Return raw plus suffixes after whitespace or opening delimiters."""
     starts = [(0, raw)]
-    for boundary in re.finditer(r"[ \t]+", raw):
+    for boundary in re.finditer(r"[ \t]+|(?<=[([{])", raw):
         start = boundary.end()
         starts.append((start, raw[start:]))
     return starts
@@ -208,7 +213,9 @@ def extract_targets(text: str, cwds: list[str]) -> list[str]:
     for match in FILE_URL_RE.finditer(text):
         raw = file_url_path(match.group(0))
         if raw:
-            hits.append((match.start(0), raw))
+            resolved = resolve(raw, cwds)
+            if resolved:
+                hits.append((match.start(0), resolved))
 
     for match in PATH_RE.finditer(text):
         for offset, raw in candidate_starts(match.group(1)):

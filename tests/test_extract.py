@@ -55,10 +55,24 @@ class ExtractTargetsTests(unittest.TestCase):
         Path(self.cwd, "notes").mkdir()
         Path(self.cwd, "src", "app.py").write_text("print('hi')\n")
         Path(self.cwd, "README.md").write_text("readme\n")
+        Path(self.cwd, "data.json").write_text("{}\n")
+        Path(self.cwd, "run.sh").write_text("#!/bin/sh\n")
+        Path(self.cwd, "notes.txt").write_text("notes\n")
         Path(self.cwd, ".env").write_text("SECRET=1\n")
         Path(self.cwd, "LICENSE").write_text("license\n")
+        Path(self.cwd, "draft (1)").write_text("draft\n")
         Path(self.cwd, "notes", "Meeting Notes.md").write_text("notes\n")
+        Path(self.cwd, "notes", "meeting(1).md").write_text("notes\n")
         Path(self.cwd, "notes", "研究.md").write_text("research\n")
+        Path(
+            self.cwd,
+            "1. Projects",
+        ).mkdir()
+        Path(
+            self.cwd,
+            "1. Projects",
+            "arcs: AccountedFor - Dr. B Feedback on Matt Johnston Proposal (2026-09-21).md",
+        ).write_text("feedback\n")
         self.cwds = [self.cwd]
 
     def tearDown(self):
@@ -102,6 +116,20 @@ class ExtractTargetsTests(unittest.TestCase):
             [os.path.join(self.cwd, "LICENSE")],
         )
 
+    def test_extensionless_filename_ending_in_parenthesis(self):
+        target = os.path.join(self.cwd, "draft (1)")
+        self.assertEqual(
+            pick_and_open.extract_targets("read (draft (1))", self.cwds), [target]
+        )
+
+    def test_common_extensions(self):
+        for filename in ("data.json", "README.md", "run.sh", "notes.txt"):
+            with self.subTest(filename=filename):
+                self.assertEqual(
+                    pick_and_open.extract_targets(f"open {filename}", self.cwds),
+                    [os.path.join(self.cwd, filename)],
+                )
+
     def test_path_with_spaces(self):
         target = os.path.join(self.cwd, "notes", "Meeting Notes.md")
         self.assertEqual(
@@ -112,6 +140,17 @@ class ExtractTargetsTests(unittest.TestCase):
         target = os.path.join(self.cwd, "notes", "研究.md")
         self.assertEqual(
             pick_and_open.extract_targets(f"open {target} now", self.cwds), [target]
+        )
+
+    def test_parentheses_and_obvious_filename_punctuation(self):
+        target = os.path.join(
+            self.cwd,
+            "1. Projects",
+            "arcs: AccountedFor - Dr. B Feedback on Matt Johnston Proposal (2026-09-21).md",
+        )
+        self.assertEqual(
+            pick_and_open.extract_targets(f"Obsidian link ({target})", self.cwds),
+            [target],
         )
 
     def test_obsidian_absolute_markdown_path(self):
@@ -125,6 +164,20 @@ class ExtractTargetsTests(unittest.TestCase):
         target = os.path.join(self.cwd, "notes", "Meeting Notes.md")
         self.assertEqual(
             pick_and_open.extract_targets("Obsidian link: notes/Meeting Notes.md", self.cwds),
+            [target],
+        )
+
+    def test_obsidian_project_path_shape(self):
+        target = os.path.join(
+            self.cwd,
+            "1. Projects",
+            "arcs: AccountedFor - Dr. B Feedback on Matt Johnston Proposal (2026-09-21).md",
+        )
+        self.assertEqual(
+            pick_and_open.extract_targets(
+                "Read 1. Projects/arcs: AccountedFor - Dr. B Feedback on Matt Johnston Proposal (2026-09-21).md",
+                self.cwds,
+            ),
             [target],
         )
 
@@ -149,6 +202,13 @@ class ExtractTargetsTests(unittest.TestCase):
         quoted = urllib_quote(target)
         self.assertEqual(
             pick_and_open.extract_targets(f"open file://{quoted}#L12", self.cwds),
+            [target],
+        )
+
+    def test_file_url_with_parenthesized_path(self):
+        target = os.path.join(self.cwd, "notes", "meeting(1).md")
+        self.assertEqual(
+            pick_and_open.extract_targets(f"open (file://{target})", self.cwds),
             [target],
         )
 
