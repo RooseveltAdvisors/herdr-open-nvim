@@ -5,6 +5,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from urllib.parse import quote
 from pathlib import Path
 
 script = Path(__file__).resolve().parent.parent / "scripts" / "pick-and-open"
@@ -209,6 +210,18 @@ class ExtractTargetsTests(unittest.TestCase):
         target = os.path.join(self.cwd, "notes", "meeting(1).md")
         self.assertEqual(
             pick_and_open.extract_targets(f"open (file://{target})", self.cwds),
+            [target],
+        )
+
+    def test_file_url_with_parenthesized_obsidian_path_and_wrapper(self):
+        target = os.path.join(
+            self.cwd,
+            "1. Projects",
+            "arcs: AccountedFor - Dr. B Feedback on Matt Johnston Proposal (2026-09-21).md",
+        )
+        uri = "file://" + quote(target)
+        self.assertEqual(
+            pick_and_open.extract_targets(f"open ({uri})#L12", self.cwds),
             [target],
         )
 
