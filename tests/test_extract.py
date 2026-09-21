@@ -52,8 +52,13 @@ class ExtractTargetsTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.cwd = self.tmp.name
         Path(self.cwd, "src").mkdir()
+        Path(self.cwd, "notes").mkdir()
         Path(self.cwd, "src", "app.py").write_text("print('hi')\n")
         Path(self.cwd, "README.md").write_text("readme\n")
+        Path(self.cwd, ".env").write_text("SECRET=1\n")
+        Path(self.cwd, "LICENSE").write_text("license\n")
+        Path(self.cwd, "notes", "Meeting Notes.md").write_text("notes\n")
+        Path(self.cwd, "notes", "研究.md").write_text("research\n")
         self.cwds = [self.cwd]
 
     def tearDown(self):
@@ -77,6 +82,50 @@ class ExtractTargetsTests(unittest.TestCase):
         self.assertEqual(
             pick_and_open.extract_targets("open src/app.py now", self.cwds),
             [os.path.join(self.cwd, "src", "app.py")],
+        )
+
+    def test_bare_filename(self):
+        self.assertEqual(
+            pick_and_open.extract_targets("open README.md now", self.cwds),
+            [os.path.join(self.cwd, "README.md")],
+        )
+
+    def test_hidden_file(self):
+        self.assertEqual(
+            pick_and_open.extract_targets("inspect .env", self.cwds),
+            [os.path.join(self.cwd, ".env")],
+        )
+
+    def test_extensionless_filename(self):
+        self.assertEqual(
+            pick_and_open.extract_targets("read LICENSE", self.cwds),
+            [os.path.join(self.cwd, "LICENSE")],
+        )
+
+    def test_path_with_spaces(self):
+        target = os.path.join(self.cwd, "notes", "Meeting Notes.md")
+        self.assertEqual(
+            pick_and_open.extract_targets(f"open {target} now", self.cwds), [target]
+        )
+
+    def test_unicode_path(self):
+        target = os.path.join(self.cwd, "notes", "研究.md")
+        self.assertEqual(
+            pick_and_open.extract_targets(f"open {target} now", self.cwds), [target]
+        )
+
+    def test_obsidian_absolute_markdown_path(self):
+        target = os.path.join(self.cwd, "notes", "Meeting Notes.md")
+        self.assertEqual(
+            pick_and_open.extract_targets(f"Obsidian link: {target}", self.cwds),
+            [target],
+        )
+
+    def test_obsidian_relative_markdown_path(self):
+        target = os.path.join(self.cwd, "notes", "Meeting Notes.md")
+        self.assertEqual(
+            pick_and_open.extract_targets("Obsidian link: notes/Meeting Notes.md", self.cwds),
+            [target],
         )
 
     def test_tilde_path(self):

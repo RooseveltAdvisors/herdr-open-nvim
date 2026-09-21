@@ -114,14 +114,14 @@ def pane_has_retained_history(socket_path: str, pane_id: str) -> bool:
 
 # ---------------------------------------------------------------- extraction
 
-# Anything with at least one internal slash, optionally absolute, ~/ or ../
-# prefixed, with optional trailing :line or :line:col. The lookbehind keeps us
-# from matching mid-token or inside URL authorities (https://host/x/y: the
-# match candidate is preceded by '/').
+# Path-shaped transcript text, optionally absolute, ~/ or ../ prefixed, with
+# optional trailing :line or :line:col. The token class intentionally admits
+# spaces and Unicode; extraction resolves exact candidates against each cwd.
+# The lookbehind keeps us from matching mid-token or inside URL authorities.
 PATH_RE = re.compile(
     r"(?<![\w.@+~/-])"
-    r"((?:/|~/|\.\.?/)?[\w.@+~-]+(?:/[\w.@+~-]+)+/?"
-    r"(?::\d+)?(?::\d+)?)"
+    r"((?:/|~/|\.\.?/)?[^\s\"'<>()[\],;!?]+"
+    r"(?:[ \t]+[^\s\"'<>()[\],;!?]+)*)"
 )
 # Trailing :line and :line:col suffixes on a path-shaped token.
 LINE_COL_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
@@ -174,6 +174,29 @@ def resolve(token: str, cwds: list[str]) -> Optional[str]:
     return None
 
 
+def resolve_candidate(raw: str, cwds: list[str]) -> Optional[str]:
+    """Resolve an exact path embedded in a whitespace-delimited text match."""
+    candidate = raw
+    while candidate:
+        resolved = resolve(candidate, cwds)
+        if resolved:
+            return resolved
+        boundary = re.search(r"[ \t]+[^ \t]*$", candidate)
+        if not boundary:
+            break
+        candidate = candidate[: boundary.start()].rstrip()
+    return None
+
+
+def candidate_starts(raw: str) -> list[tuple[int, str]]:
+    """Return raw plus each whitespace-delimited suffix and its offset."""
+    starts = [(0, raw)]
+    for boundary in re.finditer(r"[ \t]+", raw):
+        start = boundary.end()
+        starts.append((start, raw[start:]))
+    return starts
+
+
 def extract_targets(text: str, cwds: list[str]) -> list[str]:
     """Readable file targets from transcript text, most recent first.
 
@@ -188,13 +211,15 @@ def extract_targets(text: str, cwds: list[str]) -> list[str]:
             hits.append((match.start(0), raw))
 
     for match in PATH_RE.finditer(text):
-        hits.append((match.start(1), match.group(1)))
+        for offset, raw in candidate_starts(match.group(1)):
+            resolved = resolve_candidate(raw, cwds)
+            if resolved:
+                hits.append((match.start(1) + offset, resolved))
 
     ordered: list[str] = []
     seen: set[str] = set()
-    for _, raw in sorted(hits, key=lambda hit: hit[0], reverse=True):
-        resolved = resolve(raw, cwds)
-        if resolved and resolved not in seen:
+    for _, resolved in sorted(hits, key=lambda hit: hit[0], reverse=True):
+        if resolved not in seen:
             seen.add(resolved)
             ordered.append(resolved)
     return ordered

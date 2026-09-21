@@ -50,8 +50,8 @@ workspace-relative paths, optionally with `:line` or `:line:col` suffixes, plus
 `file://` URIs (percent-encoding and `#fragments` handled). A candidate is
 offered only if it exists and is readable; paths are resolved against the
 focused pane's cwd, then the workspace cwd. Candidates are listed most
-recently mentioned first. Bare filenames without a directory component are not
-extracted (too noisy).
+recently mentioned first. Bare filenames, hidden files, extensionless files,
+paths containing spaces, and Unicode paths are supported.
 
 ## Install (local-only)
 
